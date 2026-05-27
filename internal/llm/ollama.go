@@ -8,13 +8,15 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/myothuko98/git-explain/internal/config"
 )
 
 type ollamaProvider struct {
-	cfg config.OllamaConfig
+	cfg          config.OllamaConfig
+	resolvedModel string // set by Available(); may differ from cfg.Model
 }
 
 func NewOllama(cfg config.OllamaConfig) Provider {
@@ -23,23 +25,85 @@ func NewOllama(cfg config.OllamaConfig) Provider {
 
 func (o *ollamaProvider) Name() string { return "ollama" }
 
+// model returns the resolved model name (auto-detected if configured model is absent).
+func (o *ollamaProvider) model() string {
+	if o.resolvedModel != "" {
+		return o.resolvedModel
+	}
+	return o.cfg.Model
+}
+
+// Available checks that Ollama is reachable and at least one chat model is
+// present. If the configured model is not installed it auto-selects the first
+// non-embedding model that is available.
 func (o *ollamaProvider) Available(ctx context.Context) bool {
+	c := &http.Client{Timeout: 2 * time.Second}
+
+	// Quick liveness check
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, o.cfg.URL, nil)
 	if err != nil {
 		return false
 	}
-	c := &http.Client{Timeout: 2 * time.Second}
 	resp, err := c.Do(req)
 	if err != nil {
 		return false
 	}
 	resp.Body.Close()
-	return resp.StatusCode == 200
+	if resp.StatusCode != http.StatusOK {
+		return false
+	}
+
+	// Fetch model list and resolve the effective model.
+	tagsReq, err := http.NewRequestWithContext(ctx, http.MethodGet, o.cfg.URL+"/api/tags", nil)
+	if err != nil {
+		return true // liveness OK; proceed optimistically
+	}
+	tagsResp, err := c.Do(tagsReq)
+	if err != nil {
+		return true
+	}
+	defer tagsResp.Body.Close()
+
+	var payload struct {
+		Models []struct {
+			Name string `json:"name"`
+		} `json:"models"`
+	}
+	if err := json.NewDecoder(tagsResp.Body).Decode(&payload); err != nil || len(payload.Models) == 0 {
+		return false // Ollama running but no models installed
+	}
+
+	// Check if the configured model is available.
+	for _, m := range payload.Models {
+		if m.Name == o.cfg.Model || strings.HasPrefix(m.Name, o.cfg.Model+":") {
+			o.resolvedModel = m.Name
+			return true
+		}
+	}
+
+	// Configured model not found — auto-select first non-embedding model.
+	embeddingFamilies := []string{"nomic-bert", "bert", "embed"}
+	for _, m := range payload.Models {
+		isEmbed := false
+		lower := strings.ToLower(m.Name)
+		for _, e := range embeddingFamilies {
+			if strings.Contains(lower, e) {
+				isEmbed = true
+				break
+			}
+		}
+		if !isEmbed {
+			o.resolvedModel = m.Name
+			return true
+		}
+	}
+
+	return false
 }
 
 func (o *ollamaProvider) Explain(ctx context.Context, prompt string) (string, error) {
 	body, err := json.Marshal(map[string]any{
-		"model":  o.cfg.Model,
+		"model":  o.model(),
 		"prompt": prompt,
 		"stream": false,
 	})
@@ -80,7 +144,7 @@ func (o *ollamaProvider) Explain(ctx context.Context, prompt string) (string, er
 // Stream implements Streamer — writes tokens to w as they arrive.
 func (o *ollamaProvider) Stream(ctx context.Context, prompt string, w io.Writer) error {
 	body, err := json.Marshal(map[string]any{
-		"model":  o.cfg.Model,
+		"model":  o.model(),
 		"prompt": prompt,
 		"stream": true,
 	})
