@@ -1,31 +1,40 @@
+version: "2"
+
 run:
   timeout: 5m
   go: "1.24"
 
 linters:
+  default: none
   enable:
     - errcheck       # check error return values are handled
     - govet          # go vet checks
-    - staticcheck    # staticcheck SA rules
-    - gofmt          # formatting
+    - staticcheck    # staticcheck SA + S (replaces gosimple)
     - misspell       # common English misspellings in comments/strings
     - unconvert      # remove unnecessary type conversions
-    - gosimple       # simplifications
     - ineffassign    # detect ineffectual assignments
     - unused         # unused code
     - bodyclose      # check http response body is closed
     - noctx          # http requests should use context
     - copyloopvar    # loop variable capture in goroutines (go1.22+)
 
-linters-settings:
-  errcheck:
-    check-blank: false   # allow _ = someErr() for fire-and-forget cache writes
-  misspell:
-    locale: US
-  govet:
-    enable-all: true
-    disable:
-      - shadow         # too noisy for short-lived err vars
+  settings:
+    errcheck:
+      check-blank: false   # allow _ = someErr() for fire-and-forget cache writes
+      exclude-functions:
+        - (io.Closer).Close        # defer f.Close() is idiomatic; errors rarely actionable
+        - (*os.File).Close         # defer f.Close() on read/write files
+        - (*compress/gzip.Reader).Close
+    misspell:
+      locale: US
+    govet:
+      enable-all: true
+      disable:
+        - shadow         # too noisy for short-lived err vars
+
+formatters:
+  enable:
+    - gofmt
 
 issues:
   exclude-rules:

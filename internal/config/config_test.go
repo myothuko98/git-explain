@@ -64,7 +64,7 @@ func TestLoad_EnvVarOverride_NoConfigFile(t *testing.T) {
 
 	// Ensure no config file exists.
 	cfgPath := filepath.Join(tmp, ".git-explain", "config.toml")
-	os.Remove(cfgPath)
+	_ = os.Remove(cfgPath)
 
 	cfg, err := Load()
 	if err != nil {

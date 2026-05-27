@@ -139,7 +139,7 @@ func (p *openAICompatProvider) Stream(ctx context.Context, prompt string, w io.W
 			return fmt.Errorf("%s: %s", p.name, chunk.Error.Message)
 		}
 		if len(chunk.Choices) > 0 && chunk.Choices[0].Delta.Content != "" {
-			fmt.Fprint(w, chunk.Choices[0].Delta.Content)
+			_, _ = fmt.Fprint(w, chunk.Choices[0].Delta.Content)
 		}
 	}
 	return scanner.Err()

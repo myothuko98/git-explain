@@ -15,7 +15,7 @@ import (
 )
 
 type ollamaProvider struct {
-	cfg          config.OllamaConfig
+	cfg           config.OllamaConfig
 	resolvedModel string // set by Available(); may differ from cfg.Model
 }
 
@@ -84,7 +84,7 @@ func (o *ollamaProvider) Available(ctx context.Context) bool {
 	if err != nil {
 		return false
 	}
-	resp.Body.Close()
+	resp.Body.Close() //nolint:errcheck
 	if resp.StatusCode != http.StatusOK {
 		return false
 	}
@@ -223,7 +223,7 @@ func (o *ollamaProvider) Stream(ctx context.Context, prompt string, w io.Writer)
 			return fmt.Errorf("ollama: %s", chunk.Error)
 		}
 		if chunk.Response != "" {
-			fmt.Fprint(w, chunk.Response)
+			_, _ = fmt.Fprint(w, chunk.Response)
 		}
 		if chunk.Done {
 			break

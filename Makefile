@@ -5,7 +5,7 @@ MAIN      := ./cmd/git-explain
 VERSION   := $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 LDFLAGS   := -ldflags="-s -w -X main.version=$(VERSION)"
 
-.PHONY: build install clean test test-verbose test-race lint vet
+.PHONY: build install clean test test-verbose test-race lint vet hooks
 
 build:
 	go build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY) $(MAIN)
@@ -34,6 +34,9 @@ vet:
 
 lint:
 	golangci-lint run ./...
+
+hooks:
+	sh scripts/install-hooks.sh
 
 clean:
 	rm -rf $(BUILD_DIR)

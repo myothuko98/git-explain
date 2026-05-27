@@ -1,6 +1,7 @@
 package git
 
 import (
+	"context"
 	"fmt"
 	"os/exec"
 	"strconv"
@@ -73,7 +74,7 @@ func parseBlameRange(out string, startLine int) ([]BlameResult, error) {
 
 func isHex(s string) bool {
 	for _, r := range s {
-		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f')) {
+		if !(r >= '0' && r <= '9') && !(r >= 'a' && r <= 'f') { //nolint:staticcheck
 			return false
 		}
 	}
@@ -267,7 +268,7 @@ func run(name string, args ...string) (string, error) {
 }
 
 func defaultRun(name string, args ...string) (string, error) {
-	cmd := exec.Command(name, args...)
+	cmd := exec.CommandContext(context.Background(), name, args...)
 	out, err := cmd.Output()
 	if err != nil {
 		if ee, ok := err.(*exec.ExitError); ok {

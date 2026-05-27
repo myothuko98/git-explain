@@ -69,8 +69,8 @@ func Set(key, content string) error {
 	committed := false
 	defer func() {
 		if !committed {
-			tmp.Close()
-			os.Remove(tmpName)
+			_ = tmp.Close()
+			_ = os.Remove(tmpName)
 		}
 	}()
 	gz := gzip.NewWriter(tmp)

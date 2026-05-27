@@ -98,7 +98,7 @@ var stopWords = map[string]bool{
 
 func tokenize(s string) []string {
 	words := strings.FieldsFunc(s, func(r rune) bool {
-		return !('a' <= r && r <= 'z') && !('0' <= r && r <= '9')
+		return !('a' <= r && r <= 'z' || '0' <= r && r <= '9') //nolint:staticcheck
 	})
 	var out []string
 	for _, w := range words {
