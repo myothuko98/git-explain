@@ -33,6 +33,14 @@ func (o *ollamaProvider) model() string {
 	return o.cfg.Model
 }
 
+// ensureModel resolves the effective model name if not yet done.
+// Called at the start of Explain/Stream so explicit --provider ollama also benefits.
+func (o *ollamaProvider) ensureModel(ctx context.Context) {
+	if o.resolvedModel == "" {
+		_ = o.Available(ctx)
+	}
+}
+
 // Available checks that Ollama is reachable and at least one chat model is
 // present. If the configured model is not installed it auto-selects the first
 // non-embedding model that is available.
@@ -102,6 +110,7 @@ func (o *ollamaProvider) Available(ctx context.Context) bool {
 }
 
 func (o *ollamaProvider) Explain(ctx context.Context, prompt string) (string, error) {
+	o.ensureModel(ctx)
 	body, err := json.Marshal(map[string]any{
 		"model":  o.model(),
 		"prompt": prompt,
@@ -143,6 +152,7 @@ func (o *ollamaProvider) Explain(ctx context.Context, prompt string) (string, er
 
 // Stream implements Streamer — writes tokens to w as they arrive.
 func (o *ollamaProvider) Stream(ctx context.Context, prompt string, w io.Writer) error {
+	o.ensureModel(ctx)
 	body, err := json.Marshal(map[string]any{
 		"model":  o.model(),
 		"prompt": prompt,
