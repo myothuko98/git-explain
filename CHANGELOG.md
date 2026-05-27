@@ -7,7 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [1.0.0] — 2025-05-27
+## [1.1.0] — 2026-05-27
+
+### Added
+- **Model picker in setup wizard** — `git-explain setup` now shows a numbered list of models
+  for every provider; Ollama lists installed models live from `/api/tags`, cloud providers
+  show curated lists of popular models. Enter a number, press Enter to keep current, or type
+  any custom model name.
+- **`llm.ListModels(ctx, url)`** — exported helper to enumerate installed Ollama models.
+
+### Fixed
+- **Ollama auto-detection** — `Available()` now queries `/api/tags` and auto-selects the first
+  non-embedding model when the configured model (`llama3.2`) is not installed. Ollama with
+  zero models is treated as unavailable.
+- **Explicit `--provider ollama`** — lazy `ensureModel()` call in `Explain()` and `Stream()` so
+  model auto-detection applies even when `--provider ollama` bypasses `Available()`.
+- **stdin buffering** — setup wizard now uses a single shared `bufio.Reader` over `os.Stdin`,
+  preventing input corruption when multiple prompts are answered in sequence.
+
+---
+
+## [1.0.0] — 2026-05-27
 
 ### Added
 
