@@ -2,6 +2,12 @@
 
 > **Understand *why* code changed, not just *when*.**
 
+[![CI](https://github.com/myothuko98/git-explain/actions/workflows/lint.yml/badge.svg)](https://github.com/myothuko98/git-explain/actions/workflows/lint.yml)
+[![Release](https://img.shields.io/github/v/release/myothuko98/git-explain)](https://github.com/myothuko98/git-explain/releases/latest)
+[![Go version](https://img.shields.io/github/go-mod/go-version/myothuko98/git-explain)](go.mod)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Go Report Card](https://goreportcard.com/badge/github.com/myothuko98/git-explain)](https://goreportcard.com/report/github.com/myothuko98/git-explain)
+
 `git-explain` is a CLI tool that turns raw `git blame` / `git log` output into clear human-readable explanations using AI — privately, with zero mandatory configuration.
 
 ```

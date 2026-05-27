@@ -19,10 +19,14 @@ import (
 	"github.com/myothuko98/git-explain/internal/render"
 )
 
+// version is set at build time via -ldflags "-X main.version=v1.0.0".
+var version = "dev"
+
 func main() {
 	root := &cobra.Command{
-		Use:   "git-explain",
-		Short: "AI-powered git history explainer",
+		Use:     "git-explain",
+		Short:   "AI-powered git history explainer",
+		Version: version,
 		Long: `git-explain — understand why code changed, not just when.
 
 Explains git blame lines, commits, pull requests, and team patterns
