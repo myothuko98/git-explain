@@ -10,18 +10,18 @@ import (
 
 // AuthorPattern holds stats for a single author.
 type AuthorPattern struct {
-	Author      string
-	TotalCommits int
-	FixRatio    float64
+	Author        string
+	TopKeywords   []string
+	TotalCommits  int
+	FixRatio      float64
 	RefactorRatio float64
-	TopKeywords []string
 }
 
-// TeamPatterns analyses commit log entries and returns per-author stats.
+// TeamPatterns analyzes commit log entries and returns per-author stats.
 func TeamPatterns(entries []gitpkg.LogEntry, filterAuthor string) []AuthorPattern {
 	type stats struct {
-		total, fixes, refactors int
 		keywords                map[string]int
+		total, fixes, refactors int
 	}
 	authorMap := map[string]*stats{}
 	for _, e := range entries {
@@ -59,8 +59,11 @@ func TeamPatterns(entries []gitpkg.LogEntry, filterAuthor string) []AuthorPatter
 			TopKeywords:   topN(s.keywords, 5),
 		})
 	}
-	sort.Slice(result, func(i, j int) bool {
-		return result[i].TotalCommits > result[j].TotalCommits
+	sort.SliceStable(result, func(i, j int) bool {
+		if result[i].TotalCommits != result[j].TotalCommits {
+			return result[i].TotalCommits > result[j].TotalCommits
+		}
+		return result[i].Author < result[j].Author // stable alphabetical tiebreaker
 	})
 	return result
 }
@@ -115,7 +118,12 @@ func topN(freq map[string]int, n int) []string {
 	for k, v := range freq {
 		pairs = append(pairs, kv{k, v})
 	}
-	sort.Slice(pairs, func(i, j int) bool { return pairs[i].v > pairs[j].v })
+	sort.SliceStable(pairs, func(i, j int) bool {
+		if pairs[i].v != pairs[j].v {
+			return pairs[i].v > pairs[j].v
+		}
+		return pairs[i].k < pairs[j].k // alphabetical tiebreaker for determinism
+	})
 	var out []string
 	for i, p := range pairs {
 		if i >= n {

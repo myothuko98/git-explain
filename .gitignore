@@ -5,3 +5,6 @@ bin/
 *.out
 .DS_Store
 ~/.git-explain/
+
+# Local planning docs — not for version control
+docs/

@@ -11,6 +11,7 @@ var sampleEntries = []gitpkg.LogEntry{
 	{SHA: "a1", Author: "Alice", Date: "2024-01-01", Subject: "fix: memory leak in handler"},
 	{SHA: "a2", Author: "Alice", Date: "2024-01-02", Subject: "fix: nil pointer in auth"},
 	{SHA: "a3", Author: "Alice", Date: "2024-01-03", Subject: "feat: add user search"},
+	{SHA: "a4", Author: "Alice", Date: "2024-01-04", Subject: "refactor: split handler"},
 	{SHA: "b1", Author: "Bob", Date: "2024-01-01", Subject: "refactor: clean up DB layer"},
 	{SHA: "b2", Author: "Bob", Date: "2024-01-02", Subject: "docs: update README"},
 	{SHA: "b3", Author: "Bob", Date: "2024-01-03", Subject: "refactor: rename user model"},
@@ -40,9 +41,9 @@ func TestTeamPatterns_FilterAuthor(t *testing.T) {
 func TestTeamPatterns_FixRatio(t *testing.T) {
 	patterns := analyze.TeamPatterns(sampleEntries, "Alice")
 	alice := patterns[0]
-	// 2 out of 3 commits are fixes
-	if alice.FixRatio < 0.6 || alice.FixRatio > 0.7 {
-		t.Errorf("expected Alice fix ratio ~0.67, got %.2f", alice.FixRatio)
+	// 2 out of 4 commits are fixes
+	if alice.FixRatio < 0.49 || alice.FixRatio > 0.51 {
+		t.Errorf("expected Alice fix ratio ~0.50, got %.2f", alice.FixRatio)
 	}
 }
 
@@ -58,7 +59,7 @@ func TestTeamPatterns_RefactorRatio(t *testing.T) {
 func TestFormatPattern(t *testing.T) {
 	p := analyze.AuthorPattern{
 		Author:        "Alice",
-		TotalCommits:  3,
+		TotalCommits:  4,
 		FixRatio:      0.67,
 		RefactorRatio: 0.0,
 		TopKeywords:   []string{"fix", "memory", "auth"},

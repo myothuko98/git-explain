@@ -1,0 +1,85 @@
+name: Bug Report
+description: Something isn't working as expected
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug. Please fill in as much detail as possible.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: A clear and concise description of the bug.
+      placeholder: git-explain blame src/auth.go:42 printed "no changes detected" instead of an explanation
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Exact commands to reproduce the issue.
+      placeholder: |
+        1. cd into a git repo
+        2. Run `git-explain blame src/auth.go:42`
+        3. See error
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+      placeholder: Should print a 3-5 sentence explanation of the line.
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behaviour
+      placeholder: Prints "no changes detected" and exits 1.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: provider
+    attributes:
+      label: LLM provider in use
+      options:
+        - Ollama (local)
+        - OpenAI
+        - Anthropic
+        - Gemini
+        - Rule-based (no LLM)
+        - Not sure / auto
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: git-explain version
+      placeholder: git-explain --version
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - macOS
+        - Linux
+        - Windows (WSL)
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Additional context
+      description: Logs, config snippets, or anything else that might help.

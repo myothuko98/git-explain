@@ -1,0 +1,52 @@
+name: Feature Request
+description: Suggest a new feature or improvement
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Got an idea? Describe the problem you're facing and what you'd like to see.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem statement
+      description: What are you trying to do that you can't do today?
+      placeholder: I want to explain multiple files at once but git-explain only handles one at a time.
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: Describe what you'd like to happen.
+      placeholder: |
+        Add a `batch` subcommand:
+        git-explain batch src/auth.go:42 src/db.go:100
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other approaches you thought of, and why you prefer your proposal.
+
+  - type: dropdown
+    id: impact
+    attributes:
+      label: How often would you use this?
+      options:
+        - Daily
+        - A few times a week
+        - Occasionally
+        - Rarely / nice to have
+    validations:
+      required: true
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Additional context
+      description: Examples, references, mockups, or related issues.

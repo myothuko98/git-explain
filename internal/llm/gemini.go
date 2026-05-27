@@ -27,26 +27,40 @@ func (g *geminiProvider) Available(_ context.Context) bool {
 
 func (g *geminiProvider) Explain(ctx context.Context, prompt string) (string, error) {
 	url := fmt.Sprintf(
-		"https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent?key=%s",
-		g.cfg.Model, g.cfg.APIKey,
+		"https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent",
+		g.cfg.Model,
 	)
-	body, _ := json.Marshal(map[string]any{
+	body, err := json.Marshal(map[string]any{
 		"contents": []map[string]any{
 			{"parts": []map[string]string{{"text": prompt}}},
 		},
 	})
+	if err != nil {
+		return "", fmt.Errorf("gemini: marshal: %w", err)
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return "", err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
+	req.Header.Set("x-goog-api-key", g.cfg.APIKey)
+	resp, err := apiClient.Do(req)
 	if err != nil {
 		return "", err
 	}
 	defer resp.Body.Close()
-	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return "", fmt.Errorf("gemini: HTTP %d: %s", resp.StatusCode, raw)
+	}
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return "", fmt.Errorf("gemini: read: %w", err)
+	}
 	var res struct {
+		Error *struct {
+			Message string `json:"message"`
+		} `json:"error"`
 		Candidates []struct {
 			Content struct {
 				Parts []struct {
@@ -54,9 +68,6 @@ func (g *geminiProvider) Explain(ctx context.Context, prompt string) (string, er
 				} `json:"parts"`
 			} `json:"content"`
 		} `json:"candidates"`
-		Error *struct {
-			Message string `json:"message"`
-		} `json:"error"`
 	}
 	if err := json.Unmarshal(raw, &res); err != nil {
 		return "", fmt.Errorf("gemini: %w", err)

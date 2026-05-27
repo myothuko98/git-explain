@@ -4,7 +4,7 @@ MAIN      := ./cmd/git-explain
 
 GOFLAGS   := -ldflags="-s -w"
 
-.PHONY: build install clean test lint
+.PHONY: build install clean test test-verbose test-race lint vet
 
 build:
 	go build $(GOFLAGS) -o $(BUILD_DIR)/$(BINARY) $(MAIN)
@@ -19,10 +19,19 @@ release:
 	GOOS=linux   GOARCH=arm64 go build $(GOFLAGS) -o $(BUILD_DIR)/$(BINARY)-linux-arm64  $(MAIN)
 
 test:
+	go test ./... -count=1
+
+test-verbose:
 	go test ./... -v -count=1
 
-lint:
+test-race:
+	go test -race ./... -count=1
+
+vet:
 	go vet ./...
+
+lint:
+	golangci-lint run ./...
 
 clean:
 	rm -rf $(BUILD_DIR)

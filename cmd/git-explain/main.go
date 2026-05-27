@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strconv"
@@ -10,9 +12,10 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/myothuko98/git-explain/internal/analyze"
+	"github.com/myothuko98/git-explain/internal/cache"
+	"github.com/myothuko98/git-explain/internal/config"
 	gitpkg "github.com/myothuko98/git-explain/internal/git"
 	"github.com/myothuko98/git-explain/internal/llm"
-	"github.com/myothuko98/git-explain/internal/config"
 	"github.com/myothuko98/git-explain/internal/render"
 )
 
@@ -32,8 +35,10 @@ Zero config required — falls back to rule-based analysis if no LLM is availabl
 		blameCmd(),
 		logCmd(),
 		prCmd(),
+		diffCmd(),
 		patternsCmd(),
 		setupCmd(),
+		cacheCmd(),
 	)
 
 	if err := root.Execute(); err != nil {
@@ -41,138 +46,289 @@ Zero config required — falls back to rule-based analysis if no LLM is availabl
 	}
 }
 
+// ── common flags ──────────────────────────────────────────────────────────────
+
+type commonFlags struct {
+	model   string
+	jsonOut bool
+}
+
+func addCommonFlags(cmd *cobra.Command, f *commonFlags) {
+	cmd.Flags().BoolVar(&f.jsonOut, "json", false, "Output as JSON instead of formatted text")
+	cmd.Flags().StringVar(&f.model, "model", "", "Override LLM model for this request (e.g. gpt-4o, llama3.2)")
+}
+
+func applyModelOverride(cfg *config.Config, model string) {
+	if model == "" {
+		return
+	}
+	cfg.Ollama.Model = model
+	cfg.OpenAI.Model = model
+	cfg.Anthropic.Model = model
+	cfg.Gemini.Model = model
+	cfg.Qwen.Model = model
+	cfg.Moonshot.Model = model
+}
+
+// explainAndRender calls the LLM (streaming when TTY) and renders result.
+func explainAndRender(ctx context.Context, cfg config.Config, prompt, title, meta string, asJSON bool) error {
+	if asJSON {
+		explanation, providerName, err := llm.Explain(ctx, cfg, prompt)
+		if err != nil {
+			return err
+		}
+		render.ExplainJSON(title, meta, providerName, explanation)
+		return nil
+	}
+	// Streaming mode
+	render.StreamHeader(title, meta)
+	providerName, err := llm.ExplainStream(ctx, cfg, prompt, render.StreamWriter())
+	if err != nil {
+		return err
+	}
+	render.StreamFooter(providerName)
+	return nil
+}
+
 // ── blame ─────────────────────────────────────────────────────────────────────
 
 func blameCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "blame <file>:<line>",
-		Short: "Explain why a specific line exists",
+	var f commonFlags
+	cmd := &cobra.Command{
+		Use:   "blame <file>:<line>[‑end]",
+		Short: "Explain why a specific line (or range) exists",
 		Args:  cobra.ExactArgs(1),
 		Example: `  git-explain blame src/auth.go:42
-  git-explain blame internal/db/conn.go:15`,
+  git-explain blame src/auth.go:40-55
+  git-explain blame internal/db/conn.go:15 --json`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			parts := strings.SplitN(args[0], ":", 2)
 			if len(parts) != 2 {
-				return fmt.Errorf("expected <file>:<line>, got %q", args[0])
+				return fmt.Errorf("expected <file>:<line> or <file>:<start>-<end>, got %q", args[0])
 			}
 			file := parts[0]
-			lineNo, err := strconv.Atoi(parts[1])
-			if err != nil {
-				return fmt.Errorf("invalid line number: %q", parts[1])
-			}
 
 			if _, err := gitpkg.TopDir(); err != nil {
 				return err
 			}
 
-			blame, err := gitpkg.Blame(file, lineNo)
-			if err != nil {
-				return err
-			}
-
-			commit, err := gitpkg.Show(blame.SHA)
-			if err != nil {
-				return err
-			}
-
 			cfg, _ := config.Load()
-			prompt := fmt.Sprintf(`You are an expert software engineer. Explain why this line of code exists and what change introduced it.
+			applyModelOverride(&cfg, f.model)
+
+			// Range or single line?
+			lineSpec := parts[1]
+			if strings.Contains(lineSpec, "-") {
+				return blameRange(cmd.Context(), cfg, file, lineSpec, f.jsonOut)
+			}
+			lineNo, err := strconv.Atoi(lineSpec)
+			if err != nil {
+				return fmt.Errorf("invalid line: %q", lineSpec)
+			}
+			return blameSingle(cmd.Context(), cfg, file, lineNo, f.jsonOut)
+		},
+	}
+	addCommonFlags(cmd, &f)
+	return cmd
+}
+
+func blameSingle(ctx context.Context, cfg config.Config, file string, lineNo int, asJSON bool) error {
+	blame, err := gitpkg.Blame(file, lineNo)
+	if err != nil {
+		return err
+	}
+	commit, err := gitpkg.Show(blame.SHA)
+	if err != nil {
+		return err
+	}
+	prompt := fmt.Sprintf(`You are an expert software engineer. Explain why this line of code exists.
 
 File: %s
 Line %d: %s
 
-This line was last changed in commit %s by %s.
-Commit message: %s
-%s
+Subject: %s
+Author: %s  Commit: %s
+Body: %s
 
-Diff (truncated to 3000 chars):
+Diff (truncated):
 %s
 
 Explain in 3-5 sentences: what the commit did, why this line is the way it is, and any important context.`,
-				file, lineNo, blame.LineText,
-				blame.SHA[:8], blame.Author,
-				commit.Subject, commit.Body,
-				truncate(commit.Diff, 3000),
-			)
+		file, lineNo, blame.LineText,
+		commit.Subject, blame.Author, blame.SHA[:8],
+		commit.Body, truncate(commit.Diff, 3000))
 
-			ctx := context.Background()
-			explanation, providerName, err := llm.Explain(ctx, cfg, prompt)
-			if err != nil {
-				return err
-			}
+	title := fmt.Sprintf("Blame: %s:%d", file, lineNo)
+	meta := fmt.Sprintf("commit %s  ·  %s", blame.SHA[:8], blame.Author)
+	return explainAndRender(ctx, cfg, prompt, title, meta, asJSON)
+}
 
-			meta := fmt.Sprintf("%s:%d  ·  commit %s  ·  %s", file, lineNo, blame.SHA[:8], blame.Author)
-			render.ExplainResult("Blame Explanation", meta, providerName, explanation)
-			return nil
-		},
+func blameRange(ctx context.Context, cfg config.Config, file, lineSpec string, asJSON bool) error {
+	rangeParts := strings.SplitN(lineSpec, "-", 2)
+	if len(rangeParts) != 2 {
+		return fmt.Errorf("invalid range: %q", lineSpec)
 	}
+	start, err := strconv.Atoi(rangeParts[0])
+	if err != nil {
+		return fmt.Errorf("invalid start line: %q", rangeParts[0])
+	}
+	end, err := strconv.Atoi(rangeParts[1])
+	if err != nil {
+		return fmt.Errorf("invalid end line: %q", rangeParts[1])
+	}
+	if start <= 0 || end <= 0 {
+		return fmt.Errorf("line numbers must be positive (got %d-%d)", start, end)
+	}
+	if start > end {
+		return fmt.Errorf("start line (%d) must not exceed end line (%d)", start, end)
+	}
+
+	results, err := gitpkg.BlameRange(file, start, end)
+	if err != nil {
+		return err
+	}
+	if len(results) == 0 {
+		return fmt.Errorf("no blame results for %s:%s", file, lineSpec)
+	}
+
+	// Collect unique SHAs
+	seen := map[string]bool{}
+	var lines []string
+	for _, r := range results {
+		lines = append(lines, fmt.Sprintf("  line %d [%s]: %s", r.LineNo, r.SHA[:8], r.LineText))
+		seen[r.SHA] = true
+	}
+
+	// Get first commit detail for context
+	first := results[0]
+	commit, err := gitpkg.Show(first.SHA)
+	if err != nil {
+		return fmt.Errorf("failed to get commit details for %s: %w", first.SHA[:8], err)
+	}
+
+	prompt := fmt.Sprintf(`You are an expert software engineer. Explain why this block of code exists.
+
+File: %s  Lines: %s
+
+Code block:
+%s
+
+Primary commit: %s by %s
+Subject: %s
+Body: %s
+
+Explain in 4-6 sentences: what this block does, why it was written this way, and what problem it solves.`,
+		file, lineSpec,
+		strings.Join(lines, "\n"),
+		first.SHA[:8], first.Author,
+		commit.Subject, commit.Body)
+
+	title := fmt.Sprintf("Blame: %s:%s", file, lineSpec)
+	meta := fmt.Sprintf("%d lines  ·  %d unique commits", len(results), len(seen))
+	return explainAndRender(ctx, cfg, prompt, title, meta, asJSON)
 }
 
 // ── log ───────────────────────────────────────────────────────────────────────
 
 func logCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "log <commit-sha>",
-		Short: "Explain what a commit changed and why",
-		Args:  cobra.ExactArgs(1),
+	var f commonFlags
+	var rangeSpec string
+
+	cmd := &cobra.Command{
+		Use:   "log [commit-sha]",
+		Short: "Explain what a commit (or commit range) changed and why",
+		Args:  cobra.MaximumNArgs(1),
 		Example: `  git-explain log a3f9b2c
-  git-explain log HEAD~3`,
+  git-explain log HEAD~3
+  git-explain log --range HEAD~5..HEAD
+  git-explain log HEAD --json`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if _, err := gitpkg.TopDir(); err != nil {
 				return err
 			}
-
-			commit, err := gitpkg.Show(args[0])
-			if err != nil {
-				return err
-			}
-
 			cfg, _ := config.Load()
-			prompt := fmt.Sprintf(`You are an expert software engineer. Explain this git commit clearly and concisely.
+			applyModelOverride(&cfg, f.model)
 
-Commit: %s
-Author: %s
-Date: %s
+			if rangeSpec != "" {
+				return logRange(cmd.Context(), cfg, rangeSpec, f.jsonOut)
+			}
+			sha := "HEAD"
+			if len(args) > 0 {
+				sha = args[0]
+			}
+			return logSingle(cmd.Context(), cfg, sha, f.jsonOut)
+		},
+	}
+	addCommonFlags(cmd, &f)
+	cmd.Flags().StringVar(&rangeSpec, "range", "", "Explain a range of commits, e.g. HEAD~5..HEAD")
+	return cmd
+}
+
+func logSingle(ctx context.Context, cfg config.Config, sha string, asJSON bool) error {
+	commit, err := gitpkg.Show(sha)
+	if err != nil {
+		return err
+	}
+	prompt := fmt.Sprintf(`You are an expert software engineer. Explain this git commit.
+
+Commit: %s  Author: %s  Date: %s
 Subject: %s
 Body: %s
 
 Diff:
 %s
 
-Explain in 4-6 sentences: what changed, why it was needed, what problem it solves, and any notable implementation decisions.`,
-				commit.SHA[:8], commit.Author, commit.Date,
-				commit.Subject, commit.Body,
-				truncate(commit.Diff, 4000),
-			)
+Explain in 4-6 sentences: what changed, why it was needed, what problem it solves, and notable implementation decisions.`,
+		commit.SHA[:8], commit.Author, commit.Date,
+		commit.Subject, commit.Body,
+		truncate(commit.Diff, 4000))
 
-			ctx := context.Background()
-			explanation, providerName, err := llm.Explain(ctx, cfg, prompt)
-			if err != nil {
-				return err
-			}
+	title := commit.Subject
+	meta := fmt.Sprintf("commit %s  ·  %s  ·  %s", commit.SHA[:8], commit.Author, commit.Date)
+	return explainAndRender(ctx, cfg, prompt, title, meta, asJSON)
+}
 
-			meta := fmt.Sprintf("commit %s  ·  %s  ·  %s", commit.SHA[:8], commit.Author, commit.Date)
-			render.ExplainResult(commit.Subject, meta, providerName, explanation)
-			return nil
-		},
+func logRange(ctx context.Context, cfg config.Config, rangeSpec string, asJSON bool) error {
+	entries, err := gitpkg.LogRange(rangeSpec)
+	if err != nil {
+		return err
 	}
+	if len(entries) == 0 {
+		render.Plain("No commits in range.")
+		return nil
+	}
+	var summary []string
+	for _, e := range entries {
+		summary = append(summary, fmt.Sprintf("  %s  %s  (%s)", e.SHA[:8], e.Subject, e.Author))
+	}
+	prompt := fmt.Sprintf(`You are an expert software engineer. Summarize what happened across these %d commits.
+
+Range: %s
+
+Commits (newest first):
+%s
+
+Write a cohesive narrative (6-10 sentences): what was worked on, the overall goal, key decisions, and the end state after all these commits.`,
+		len(entries), rangeSpec, strings.Join(summary, "\n"))
+
+	title := fmt.Sprintf("Log range: %s (%d commits)", rangeSpec, len(entries))
+	return explainAndRender(ctx, cfg, prompt, title, "", asJSON)
 }
 
 // ── pr ────────────────────────────────────────────────────────────────────────
 
 func prCmd() *cobra.Command {
-	return &cobra.Command{
+	var f commonFlags
+	cmd := &cobra.Command{
 		Use:   "pr <number>",
-		Short: "Summarise a GitHub pull request",
+		Short: "Summarize a GitHub pull request",
 		Args:  cobra.ExactArgs(1),
 		Example: `  git-explain pr 42
-  git-explain pr 100`,
+  git-explain pr 100 --json`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			num, err := strconv.Atoi(args[0])
 			if err != nil {
 				return fmt.Errorf("invalid PR number: %q", args[0])
 			}
-
 			view, err := gitpkg.PRView(num)
 			if err != nil {
 				return err
@@ -181,30 +337,78 @@ func prCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-
 			cfg, _ := config.Load()
-			prompt := fmt.Sprintf(`You are an expert software engineer. Summarise this GitHub pull request.
+			applyModelOverride(&cfg, f.model)
+
+			prompt := fmt.Sprintf(`You are an expert software engineer. Summarize this GitHub pull request.
 
 PR metadata (JSON):
 %s
 
-Diff (truncated to 4000 chars):
+Diff (truncated):
 %s
 
-Provide a concise summary (5-8 sentences): purpose of the PR, what was changed, key design decisions, and potential risks or things reviewers should pay attention to.`,
-				view, truncate(diff, 4000),
-			)
+5-8 sentences: purpose, what changed, key decisions, and what reviewers should focus on.`,
+				view, truncate(diff, 4000))
 
-			ctx := context.Background()
-			explanation, providerName, err := llm.Explain(ctx, cfg, prompt)
+			title := fmt.Sprintf("PR #%d", num)
+			return explainAndRender(cmd.Context(), cfg, prompt, title, "", f.jsonOut)
+		},
+	}
+	addCommonFlags(cmd, &f)
+	return cmd
+}
+
+// ── diff ──────────────────────────────────────────────────────────────────────
+
+func diffCmd() *cobra.Command {
+	var f commonFlags
+	var rangeSpec string
+
+	cmd := &cobra.Command{
+		Use:   "diff [range]",
+		Short: "Explain the current working-tree diff or a commit range",
+		Args:  cobra.MaximumNArgs(1),
+		Example: `  git-explain diff
+  git-explain diff HEAD~3..HEAD
+  git-explain diff main..feature-branch --json`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if _, err := gitpkg.TopDir(); err != nil {
+				return err
+			}
+			r := rangeSpec
+			if len(args) > 0 {
+				r = args[0]
+			}
+			diff, err := gitpkg.Diff(r)
 			if err != nil {
 				return err
 			}
+			cfg, _ := config.Load()
+			applyModelOverride(&cfg, f.model)
 
-			render.ExplainResult(fmt.Sprintf("PR #%d Summary", num), "", providerName, explanation)
-			return nil
+			label := "working-tree changes"
+			if r != "" {
+				label = r
+			}
+			prompt := fmt.Sprintf(`You are an expert software engineer. Explain what these code changes do.
+
+Range/context: %s
+
+Diff:
+%s
+
+5-7 sentences: what was changed, why these changes make sense together, potential side-effects, and anything that needs attention.`,
+				label, truncate(diff, 5000))
+
+			title := "Diff explanation"
+			meta := label
+			return explainAndRender(cmd.Context(), cfg, prompt, title, meta, f.jsonOut)
 		},
 	}
+	addCommonFlags(cmd, &f)
+	cmd.Flags().StringVar(&rangeSpec, "range", "", "Commit range, e.g. HEAD~3..HEAD")
+	return cmd
 }
 
 // ── patterns ──────────────────────────────────────────────────────────────────
@@ -212,18 +416,18 @@ Provide a concise summary (5-8 sentences): purpose of the PR, what was changed, 
 func patternsCmd() *cobra.Command {
 	var author string
 	var limit int
+	var asJSON bool
 
 	cmd := &cobra.Command{
 		Use:   "patterns",
 		Short: "Detect team coding habits from git history",
 		Example: `  git-explain patterns
   git-explain patterns --author=alice
-  git-explain patterns --limit=500`,
+  git-explain patterns --limit=500 --json`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if _, err := gitpkg.TopDir(); err != nil {
 				return err
 			}
-
 			entries, err := gitpkg.LogAll(limit)
 			if err != nil {
 				return err
@@ -232,14 +436,17 @@ func patternsCmd() *cobra.Command {
 				render.Plain("No commits found.")
 				return nil
 			}
-
 			patterns := analyze.TeamPatterns(entries, author)
 			if len(patterns) == 0 {
 				render.Plain("No matching authors found.")
 				return nil
 			}
-
-			render.Header(fmt.Sprintf("Team Patterns  (%d commits analysed)", len(entries)))
+			if asJSON {
+				enc := json.NewEncoder(os.Stdout)
+				enc.SetIndent("", "  ")
+				return enc.Encode(patterns)
+			}
+			render.Header(fmt.Sprintf("Team Patterns  (%d commits analyzed)", len(entries)))
 			for _, p := range patterns {
 				render.Plain(analyze.FormatPattern(p))
 			}
@@ -247,7 +454,8 @@ func patternsCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&author, "author", "", "Filter to a specific author name")
-	cmd.Flags().IntVar(&limit, "limit", 1000, "Max commits to analyse")
+	cmd.Flags().IntVar(&limit, "limit", 1000, "Max commits to analyze")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
 	return cmd
 }
 
@@ -259,47 +467,39 @@ func setupCmd() *cobra.Command {
 		Short: "Interactive setup wizard",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg := config.DefaultConfig()
-
 			render.Header("git-explain setup")
 			fmt.Println()
 
-			// Detect Ollama
 			ctx := context.Background()
 			ollamaOK := llm.NewOllama(cfg.Ollama).Available(ctx)
 			if ollamaOK {
 				fmt.Println("  ✓ Ollama detected at " + cfg.Ollama.URL)
-				fmt.Println("    Using model: " + cfg.Ollama.Model)
+				fmt.Println("    Model: " + cfg.Ollama.Model)
 			} else {
 				fmt.Println("  ✗ Ollama not found (install from https://ollama.com for free local LLM)")
 			}
 			fmt.Println()
-
-			// Prompt for API keys
-			fmt.Print("  OpenAI API key (leave blank to skip): ")
+			fmt.Print("  OpenAI API key (blank to skip): ")
 			cfg.OpenAI.APIKey = readLine()
-
-			fmt.Print("  Anthropic API key (leave blank to skip): ")
+			fmt.Print("  Anthropic API key (blank to skip): ")
 			cfg.Anthropic.APIKey = readLine()
-
-			fmt.Print("  Gemini API key (leave blank to skip): ")
+			fmt.Print("  Gemini API key (blank to skip): ")
 			cfg.Gemini.APIKey = readLine()
-
+			fmt.Print("  Qwen (Alibaba DashScope) API key (blank to skip): ")
+			cfg.Qwen.APIKey = readLine()
+			fmt.Print("  Moonshot (Kimi) API key (blank to skip): ")
+			cfg.Moonshot.APIKey = readLine()
 			cfg.Provider = "auto"
 
 			if err := config.Save(cfg); err != nil {
 				return fmt.Errorf("failed to save config: %w", err)
 			}
-
+			fmt.Println("\n  ✓ Config saved to " + config.ConfigPath())
 			fmt.Println()
-			fmt.Println("  ✓ Config saved to " + config.ConfigPath())
-			fmt.Println()
-
-			// Show active chain
 			render.Header("Active provider chain")
 			for _, p := range llm.Chain(cfg) {
-				avail := p.Available(ctx)
 				status := "✗"
-				if avail {
+				if p.Available(ctx) {
 					status = "✓"
 				}
 				fmt.Printf("  %s  %s\n", status, p.Name())
@@ -308,6 +508,32 @@ func setupCmd() *cobra.Command {
 			return nil
 		},
 	}
+}
+
+// ── cache ─────────────────────────────────────────────────────────────────────
+
+func cacheCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "cache clear",
+		Short: "Manage the local response cache",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			switch args[0] {
+			case "clear":
+				if err := clearCache(); err != nil {
+					return err
+				}
+				fmt.Println("✓ Cache cleared.")
+			default:
+				return fmt.Errorf("unknown cache subcommand %q (available: clear)", args[0])
+			}
+			return nil
+		},
+	}
+}
+
+func clearCache() error {
+	return cache.Clear()
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -320,7 +546,6 @@ func truncate(s string, max int) string {
 }
 
 func readLine() string {
-	var s string
-	fmt.Scanln(&s)
+	s, _ := bufio.NewReader(os.Stdin).ReadString('\n')
 	return strings.TrimSpace(s)
 }

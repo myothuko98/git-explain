@@ -61,6 +61,95 @@ func TestRuleBasedClassifiesRevert(t *testing.T) {
 	}
 }
 
+func TestRuleBasedOutputHasRiskLevel(t *testing.T) {
+	p := llm.NewRuleBased()
+	out, _ := p.Explain(context.Background(), "fix: nil pointer in auth middleware")
+	if !contains(out, "Risk level") {
+		t.Errorf("expected 'Risk level' section in output, got: %s", out)
+	}
+}
+
+func TestRuleBasedOutputHasCauses(t *testing.T) {
+	p := llm.NewRuleBased()
+	out, _ := p.Explain(context.Background(), "fix: nil pointer in auth middleware")
+	if !contains(out, "Common causes") {
+		t.Errorf("expected 'Common causes' section in output, got: %s", out)
+	}
+}
+
+func TestRuleBasedOutputHasChecklist(t *testing.T) {
+	p := llm.NewRuleBased()
+	out, _ := p.Explain(context.Background(), "fix: nil pointer in auth middleware")
+	if !contains(out, "Review checklist") {
+		t.Errorf("expected 'Review checklist' section in output, got: %s", out)
+	}
+}
+
+func TestRuleBasedOutputHasScope(t *testing.T) {
+	p := llm.NewRuleBased()
+	out, _ := p.Explain(context.Background(), "fix: nil pointer in auth middleware")
+	if !contains(out, "Scope") {
+		t.Errorf("expected 'Scope' line in output, got: %s", out)
+	}
+}
+
+func TestRuleBasedOutputScopeDetectsAuth(t *testing.T) {
+	p := llm.NewRuleBased()
+	out, _ := p.Explain(context.Background(), "fix: nil pointer in auth middleware")
+	if !contains(out, "Auth") {
+		t.Errorf("expected 'Auth' scope in output, got: %s", out)
+	}
+}
+
+func TestRuleBasedBreakingChangeDetected(t *testing.T) {
+	p := llm.NewRuleBased()
+	out, _ := p.Explain(context.Background(), "feat!: remove legacy login API")
+	if !contains(out, "YES") {
+		t.Errorf("expected breaking change flag in output, got: %s", out)
+	}
+}
+
+func TestRuleBasedNoBreakingFlagForNormal(t *testing.T) {
+	p := llm.NewRuleBased()
+	out, _ := p.Explain(context.Background(), "fix: correct timeout handling")
+	if !contains(out, "Breaking:     No") {
+		t.Errorf("expected 'Breaking: No' in output, got: %s", out)
+	}
+}
+
+func TestRuleBasedConventionalCommitScope(t *testing.T) {
+	p := llm.NewRuleBased()
+	out, _ := p.Explain(context.Background(), "feat(payments): add Stripe integration")
+	if !contains(out, "Payments") {
+		t.Errorf("expected 'Payments' scope from conventional commit, got: %s", out)
+	}
+}
+
+func TestRuleBasedPerformanceClassification(t *testing.T) {
+	p := llm.NewRuleBased()
+	out, _ := p.Explain(context.Background(), "perf: optimize database query with index")
+	if !contains(out, "Performance") {
+		t.Errorf("expected 'Performance' change type, got: %s", out)
+	}
+}
+
+func TestRuleBasedDependencyClassification(t *testing.T) {
+	p := llm.NewRuleBased()
+	out, _ := p.Explain(context.Background(), "chore: bump golang.org/x/net from 0.15 to 0.17")
+	// bump is scored for dependency; chore CC type → chore. Both valid.
+	if !contains(out, "Dependency") && !contains(out, "Chore") {
+		t.Errorf("expected Dependency or Chore classification, got: %s", out)
+	}
+}
+
+func TestRuleBasedOutputContainsTip(t *testing.T) {
+	p := llm.NewRuleBased()
+	out, _ := p.Explain(context.Background(), "fix: something")
+	if !contains(out, "git-explain setup") {
+		t.Errorf("expected setup tip in output, got: %s", out)
+	}
+}
+
 func TestOllamaUnavailableWithoutServer(t *testing.T) {
 	p := llm.NewOllama(config.OllamaConfig{URL: "http://localhost:19999", Model: "llama3"})
 	if p.Available(context.Background()) {
@@ -72,6 +161,48 @@ func TestOpenAIUnavailableWithoutKey(t *testing.T) {
 	p := llm.NewOpenAI(config.OpenAIConfig{APIKey: "", Model: "gpt-4o-mini"})
 	if p.Available(context.Background()) {
 		t.Fatal("OpenAI should not be available without API key")
+	}
+}
+
+func TestQwenUnavailableWithoutKey(t *testing.T) {
+	p := llm.NewQwen(config.QwenConfig{APIKey: "", Model: "qwen-turbo"})
+	if p.Available(context.Background()) {
+		t.Fatal("Qwen should not be available without API key")
+	}
+}
+
+func TestQwenAvailableWithKey(t *testing.T) {
+	p := llm.NewQwen(config.QwenConfig{APIKey: "fake-key", Model: "qwen-turbo"})
+	if !p.Available(context.Background()) {
+		t.Fatal("Qwen should be available when API key is set")
+	}
+}
+
+func TestQwenName(t *testing.T) {
+	p := llm.NewQwen(config.QwenConfig{APIKey: "k", Model: "qwen-turbo"})
+	if p.Name() != "qwen" {
+		t.Fatalf("expected 'qwen', got %q", p.Name())
+	}
+}
+
+func TestMoonshotUnavailableWithoutKey(t *testing.T) {
+	p := llm.NewMoonshot(config.MoonshotConfig{APIKey: "", Model: "moonshot-v1-8k"})
+	if p.Available(context.Background()) {
+		t.Fatal("Moonshot should not be available without API key")
+	}
+}
+
+func TestMoonshotAvailableWithKey(t *testing.T) {
+	p := llm.NewMoonshot(config.MoonshotConfig{APIKey: "fake-key", Model: "moonshot-v1-8k"})
+	if !p.Available(context.Background()) {
+		t.Fatal("Moonshot should be available when API key is set")
+	}
+}
+
+func TestMoonshotName(t *testing.T) {
+	p := llm.NewMoonshot(config.MoonshotConfig{APIKey: "k", Model: "moonshot-v1-8k"})
+	if p.Name() != "moonshot" {
+		t.Fatalf("expected 'moonshot', got %q", p.Name())
 	}
 }
 

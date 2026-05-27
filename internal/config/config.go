@@ -13,6 +13,8 @@ type Config struct {
 	OpenAI    OpenAIConfig    `toml:"openai"`
 	Anthropic AnthropicConfig `toml:"anthropic"`
 	Gemini    GeminiConfig    `toml:"gemini"`
+	Qwen      QwenConfig      `toml:"qwen"`
+	Moonshot  MoonshotConfig  `toml:"moonshot"`
 }
 
 type OllamaConfig struct {
@@ -35,6 +37,16 @@ type GeminiConfig struct {
 	Model  string `toml:"model"`
 }
 
+type QwenConfig struct {
+	APIKey string `toml:"api_key"`
+	Model  string `toml:"model"`
+}
+
+type MoonshotConfig struct {
+	APIKey string `toml:"api_key"`
+	Model  string `toml:"model"`
+}
+
 func DefaultConfig() Config {
 	return Config{
 		Provider: "auto",
@@ -51,19 +63,25 @@ func DefaultConfig() Config {
 		Gemini: GeminiConfig{
 			Model: "gemini-2.0-flash",
 		},
+		Qwen: QwenConfig{
+			Model: "qwen-turbo",
+		},
+		Moonshot: MoonshotConfig{
+			Model: "moonshot-v1-8k",
+		},
 	}
 }
 
 func Load() (Config, error) {
 	cfg := DefaultConfig()
 	path := ConfigPath()
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		return cfg, nil
+	// Decode file if it exists (file values override defaults)
+	if _, err := os.Stat(path); err == nil {
+		if _, err := toml.DecodeFile(path, &cfg); err != nil {
+			return cfg, err
+		}
 	}
-	if _, err := toml.DecodeFile(path, &cfg); err != nil {
-		return cfg, err
-	}
-	// Env var overrides
+	// Env vars take highest priority — applied after file decode
 	if v := os.Getenv("OPENAI_API_KEY"); v != "" {
 		cfg.OpenAI.APIKey = v
 	}
@@ -72,6 +90,12 @@ func Load() (Config, error) {
 	}
 	if v := os.Getenv("GEMINI_API_KEY"); v != "" {
 		cfg.Gemini.APIKey = v
+	}
+	if v := os.Getenv("QWEN_API_KEY"); v != "" {
+		cfg.Qwen.APIKey = v
+	}
+	if v := os.Getenv("MOONSHOT_API_KEY"); v != "" {
+		cfg.Moonshot.APIKey = v
 	}
 	return cfg, nil
 }
@@ -89,6 +113,9 @@ func Save(cfg Config) error {
 }
 
 func ConfigPath() string {
-	home, _ := os.UserHomeDir()
+	home, err := os.UserHomeDir()
+	if err != nil {
+		home = os.TempDir()
+	}
 	return filepath.Join(home, ".git-explain", "config.toml")
 }

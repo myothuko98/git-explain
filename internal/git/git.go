@@ -13,8 +13,8 @@ type BlameResult struct {
 	Author     string
 	AuthorMail string
 	Summary    string
-	LineNo     int
 	LineText   string
+	LineNo     int
 }
 
 // Blame returns blame info for <file> at <line> (1-indexed).
@@ -24,6 +24,60 @@ func Blame(file string, line int) (BlameResult, error) {
 		return BlameResult{}, fmt.Errorf("git blame: %w", err)
 	}
 	return parseBlame(out, line)
+}
+
+// BlameRange returns blame info for <file> at lines [start, end] (1-indexed).
+func BlameRange(file string, start, end int) ([]BlameResult, error) {
+	out, err := run("git", "blame", "-p", fmt.Sprintf("-L%d,%d", start, end), "--", file)
+	if err != nil {
+		return nil, fmt.Errorf("git blame: %w", err)
+	}
+	return parseBlameRange(out, start)
+}
+
+func parseBlameRange(out string, startLine int) ([]BlameResult, error) {
+	lines := strings.Split(out, "\n")
+	var results []BlameResult
+	var current BlameResult
+	lineNo := startLine
+
+	for _, l := range lines {
+		if len(l) == 0 {
+			continue
+		}
+		// Commit header: 40-char hex + line numbers
+		if len(l) >= 40 && isHex(l[:40]) {
+			if current.SHA != "" && current.LineText != "" {
+				results = append(results, current)
+			}
+			current = BlameResult{SHA: l[:40], LineNo: lineNo}
+			lineNo++
+			continue
+		}
+		switch {
+		case strings.HasPrefix(l, "author "):
+			current.Author = strings.TrimPrefix(l, "author ")
+		case strings.HasPrefix(l, "author-mail "):
+			current.AuthorMail = strings.Trim(strings.TrimPrefix(l, "author-mail "), "<>")
+		case strings.HasPrefix(l, "summary "):
+			current.Summary = strings.TrimPrefix(l, "summary ")
+		case strings.HasPrefix(l, "\t"):
+			current.LineText = strings.TrimPrefix(l, "\t")
+		}
+	}
+	if current.SHA != "" && current.LineText != "" {
+		results = append(results, current)
+	}
+	return results, nil
+}
+
+func isHex(s string) bool {
+	for _, r := range s {
+		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f')) {
+			return false
+		}
+	}
+	return true
 }
 
 func parseBlame(out string, line int) (BlameResult, error) {
@@ -148,6 +202,53 @@ func LogAll(limit int) ([]LogEntry, error) {
 	return entries, nil
 }
 
+// Diff returns the current working-tree diff, or a range diff if rangeSpec is set.
+// rangeSpec examples: "", "HEAD~3..HEAD", "main..feature"
+func Diff(rangeSpec string) (string, error) {
+	var args []string
+	if rangeSpec == "" {
+		args = []string{"diff", "HEAD"}
+	} else {
+		args = []string{"diff", rangeSpec}
+	}
+	out, err := run("git", args...)
+	if err != nil {
+		return "", fmt.Errorf("git diff: %w", err)
+	}
+	if strings.TrimSpace(out) == "" {
+		// Nothing staged/unstaged vs HEAD — try cached
+		out2, _ := run("git", "diff", "--cached")
+		if strings.TrimSpace(out2) != "" {
+			return out2, nil
+		}
+		return "", fmt.Errorf("no changes detected")
+	}
+	return out, nil
+}
+
+// LogRange returns commits in a range (e.g. HEAD~5..HEAD).
+func LogRange(rangeSpec string) ([]LogEntry, error) {
+	args := []string{"log", "--format=%H\t%an\t%ad\t%s", "--date=short", rangeSpec}
+	out, err := run("git", args...)
+	if err != nil {
+		return nil, fmt.Errorf("git log: %w", err)
+	}
+	var entries []LogEntry
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		parts := strings.SplitN(line, "\t", 4)
+		if len(parts) < 4 {
+			continue
+		}
+		entries = append(entries, LogEntry{
+			SHA:     parts[0],
+			Author:  parts[1],
+			Date:    parts[2],
+			Subject: parts[3],
+		})
+	}
+	return entries, nil
+}
+
 // TopDir returns the root directory of the current git repo.
 func TopDir() (string, error) {
 	out, err := run("git", "rev-parse", "--show-toplevel")
@@ -157,7 +258,15 @@ func TopDir() (string, error) {
 	return strings.TrimSpace(out), nil
 }
 
+// runner is the function used to execute git/gh commands.
+// Replaced in tests to avoid real subprocess calls.
+var runner = defaultRun
+
 func run(name string, args ...string) (string, error) {
+	return runner(name, args...)
+}
+
+func defaultRun(name string, args ...string) (string, error) {
 	cmd := exec.Command(name, args...)
 	out, err := cmd.Output()
 	if err != nil {

@@ -1,0 +1,40 @@
+run:
+  timeout: 5m
+  go: "1.24"
+
+linters:
+  enable:
+    - errcheck       # check error return values are handled
+    - govet          # go vet checks
+    - staticcheck    # staticcheck SA rules
+    - gofmt          # formatting
+    - misspell       # common English misspellings in comments/strings
+    - unconvert      # remove unnecessary type conversions
+    - gosimple       # simplifications
+    - ineffassign    # detect ineffectual assignments
+    - unused         # unused code
+    - bodyclose      # check http response body is closed
+    - noctx          # http requests should use context
+    - copyloopvar    # loop variable capture in goroutines (go1.22+)
+
+linters-settings:
+  errcheck:
+    check-blank: false   # allow _ = someErr() for fire-and-forget cache writes
+  misspell:
+    locale: US
+  govet:
+    enable-all: true
+    disable:
+      - shadow         # too noisy for short-lived err vars
+
+issues:
+  exclude-rules:
+    # Test files: relax errcheck (table-driven tests often ignore errors intentionally)
+    - path: "_test\\.go"
+      linters: [errcheck, bodyclose]
+    # main.go: allow fmt.Println without error check
+    - path: "cmd/"
+      linters: [errcheck]
+      text: "fmt\\.Print"
+  max-issues-per-linter: 0
+  max-same-issues: 0

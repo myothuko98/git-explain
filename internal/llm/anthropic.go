@@ -26,13 +26,16 @@ func (a *anthropicProvider) Available(_ context.Context) bool {
 }
 
 func (a *anthropicProvider) Explain(ctx context.Context, prompt string) (string, error) {
-	body, _ := json.Marshal(map[string]any{
+	body, err := json.Marshal(map[string]any{
 		"model":      a.cfg.Model,
 		"max_tokens": 1024,
 		"messages": []map[string]string{
 			{"role": "user", "content": prompt},
 		},
 	})
+	if err != nil {
+		return "", fmt.Errorf("anthropic: marshal: %w", err)
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.anthropic.com/v1/messages", bytes.NewReader(body))
 	if err != nil {
 		return "", err
@@ -40,19 +43,26 @@ func (a *anthropicProvider) Explain(ctx context.Context, prompt string) (string,
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-api-key", a.cfg.APIKey)
 	req.Header.Set("anthropic-version", "2023-06-01")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := apiClient.Do(req)
 	if err != nil {
 		return "", err
 	}
 	defer resp.Body.Close()
-	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return "", fmt.Errorf("anthropic: HTTP %d: %s", resp.StatusCode, raw)
+	}
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return "", fmt.Errorf("anthropic: read: %w", err)
+	}
 	var res struct {
-		Content []struct {
-			Text string `json:"text"`
-		} `json:"content"`
 		Error *struct {
 			Message string `json:"message"`
 		} `json:"error"`
+		Content []struct {
+			Text string `json:"text"`
+		} `json:"content"`
 	}
 	if err := json.Unmarshal(raw, &res); err != nil {
 		return "", fmt.Errorf("anthropic: %w", err)
