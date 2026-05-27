@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.1.1] — 2026-05-27
+
+### Fixed
+- **CI lint pipeline** — upgraded to `golangci-lint-action@v7` (required for golangci-lint v2)
+  and pinned lint version to `v2.12.2` to match local tooling.
+- **golangci-lint v2 config** — migrated `issues.exclude-rules` to `linters.exclusions.rules`
+  per golangci-lint v2 schema; `golangci-lint config verify` now passes cleanly in CI.
+
+---
+
 ## [1.1.0] — 2026-05-27
 
 ### Added
