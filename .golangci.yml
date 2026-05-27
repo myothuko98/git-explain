@@ -32,18 +32,20 @@ linters:
       disable:
         - shadow         # too noisy for short-lived err vars
 
+  exclusions:
+    rules:
+      # Test files: relax errcheck (table-driven tests often ignore errors intentionally)
+      - path: "_test\\.go"
+        linters: [errcheck, bodyclose]
+      # main.go: allow fmt.Println without error check
+      - path: "cmd/"
+        linters: [errcheck]
+        text: "fmt\\.Print"
+
 formatters:
   enable:
     - gofmt
 
 issues:
-  exclude-rules:
-    # Test files: relax errcheck (table-driven tests often ignore errors intentionally)
-    - path: "_test\\.go"
-      linters: [errcheck, bodyclose]
-    # main.go: allow fmt.Println without error check
-    - path: "cmd/"
-      linters: [errcheck]
-      text: "fmt\\.Print"
   max-issues-per-linter: 0
   max-same-issues: 0
