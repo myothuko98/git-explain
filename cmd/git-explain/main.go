@@ -465,36 +465,151 @@ func patternsCmd() *cobra.Command {
 
 // ── setup ─────────────────────────────────────────────────────────────────────
 
+// knownModels lists well-known models per provider for the setup picker.
+var knownModels = map[string][]string{
+	"openai": {
+		"gpt-4o", "gpt-4o-mini", "o4-mini", "o3-mini",
+		"o1", "o1-mini", "gpt-4-turbo", "gpt-3.5-turbo",
+	},
+	"anthropic": {
+		"claude-opus-4-5", "claude-sonnet-4-5", "claude-haiku-4-5",
+		"claude-3-5-sonnet-latest", "claude-3-5-haiku-latest",
+	},
+	"gemini": {
+		"gemini-2.5-pro", "gemini-2.5-flash",
+		"gemini-2.0-flash", "gemini-1.5-pro", "gemini-1.5-flash",
+	},
+	"qwen": {
+		"qwen-max", "qwen-plus", "qwen-turbo",
+		"qwen2.5-72b-instruct", "qwen2.5-coder-32b-instruct",
+	},
+	"moonshot": {
+		"moonshot-v1-128k", "moonshot-v1-32k", "moonshot-v1-8k",
+	},
+}
+
+// selectModel shows a numbered picker and returns the chosen model.
+// models is the list to display; current is highlighted as default.
+func selectModel(providerName string, models []string, current string) string {
+	fmt.Printf("\n  Available models for %s:\n", providerName)
+	for i, m := range models {
+		marker := " "
+		if m == current {
+			marker = "*"
+		}
+		fmt.Printf("    %s %d. %s\n", marker, i+1, m)
+	}
+	fmt.Printf("    %s %d. Enter custom model name\n", " ", len(models)+1)
+	fmt.Printf("  Select [1-%d] or press Enter to keep (%s): ", len(models)+1, current)
+
+	line := readLine()
+	if line == "" {
+		return current
+	}
+
+	// Numeric selection
+	var choice int
+	if _, err := fmt.Sscanf(line, "%d", &choice); err == nil {
+		if choice >= 1 && choice <= len(models) {
+			return models[choice-1]
+		}
+		if choice == len(models)+1 {
+			fmt.Print("  Custom model name: ")
+			return readLine()
+		}
+	}
+
+	// Non-numeric → treat as literal model name
+	return line
+}
+
 func setupCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "setup",
 		Short: "Interactive setup wizard",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg := config.DefaultConfig()
+			// Start from existing config so re-runs don't wipe keys.
+			cfg, err := config.Load()
+			if err != nil {
+				cfg = config.DefaultConfig()
+			}
+
 			render.Header("git-explain setup")
 			fmt.Println()
 
 			ctx := context.Background()
+
+			// ── Ollama ──────────────────────────────────────────────────────
+			fmt.Println("  ── Ollama (local, free) ──")
 			ollamaOK := llm.NewOllama(cfg.Ollama).Available(ctx)
 			if ollamaOK {
-				fmt.Println("  ✓ Ollama detected at " + cfg.Ollama.URL)
-				fmt.Println("    Model: " + cfg.Ollama.Model)
+				fmt.Printf("  ✓ Ollama detected at %s\n", cfg.Ollama.URL)
+				models := llm.ListModels(ctx, cfg.Ollama.URL)
+				if len(models) > 0 {
+					cfg.Ollama.Model = selectModel("Ollama", models, cfg.Ollama.Model)
+				} else {
+					fmt.Println("  (no models installed — run: ollama pull <model>)")
+				}
 			} else {
-				fmt.Println("  ✗ Ollama not found (install from https://ollama.com for free local LLM)")
+				fmt.Println("  ✗ Ollama not running (https://ollama.com)")
 			}
-			fmt.Println()
-			fmt.Print("  OpenAI API key (blank to skip): ")
-			cfg.OpenAI.APIKey = readLine()
-			fmt.Print("  Anthropic API key (blank to skip): ")
-			cfg.Anthropic.APIKey = readLine()
-			fmt.Print("  Gemini API key (blank to skip): ")
-			cfg.Gemini.APIKey = readLine()
-			fmt.Print("  Qwen (Alibaba DashScope) API key (blank to skip): ")
-			cfg.Qwen.APIKey = readLine()
-			fmt.Print("  Moonshot (Kimi) API key (blank to skip): ")
-			cfg.Moonshot.APIKey = readLine()
-			cfg.Provider = "auto"
 
+			// ── OpenAI ──────────────────────────────────────────────────────
+			fmt.Println("\n  ── OpenAI ──")
+			fmt.Printf("  API key (Enter to keep existing%s): ",
+				maskKey(cfg.OpenAI.APIKey))
+			if k := readLine(); k != "" {
+				cfg.OpenAI.APIKey = k
+			}
+			if cfg.OpenAI.APIKey != "" {
+				cfg.OpenAI.Model = selectModel("OpenAI", knownModels["openai"], cfg.OpenAI.Model)
+			}
+
+			// ── Anthropic ───────────────────────────────────────────────────
+			fmt.Println("\n  ── Anthropic ──")
+			fmt.Printf("  API key (Enter to keep existing%s): ",
+				maskKey(cfg.Anthropic.APIKey))
+			if k := readLine(); k != "" {
+				cfg.Anthropic.APIKey = k
+			}
+			if cfg.Anthropic.APIKey != "" {
+				cfg.Anthropic.Model = selectModel("Anthropic", knownModels["anthropic"], cfg.Anthropic.Model)
+			}
+
+			// ── Gemini ──────────────────────────────────────────────────────
+			fmt.Println("\n  ── Gemini ──")
+			fmt.Printf("  API key (Enter to keep existing%s): ",
+				maskKey(cfg.Gemini.APIKey))
+			if k := readLine(); k != "" {
+				cfg.Gemini.APIKey = k
+			}
+			if cfg.Gemini.APIKey != "" {
+				cfg.Gemini.Model = selectModel("Gemini", knownModels["gemini"], cfg.Gemini.Model)
+			}
+
+			// ── Qwen ────────────────────────────────────────────────────────
+			fmt.Println("\n  ── Qwen (Alibaba DashScope) ──")
+			fmt.Printf("  API key (Enter to keep existing%s): ",
+				maskKey(cfg.Qwen.APIKey))
+			if k := readLine(); k != "" {
+				cfg.Qwen.APIKey = k
+			}
+			if cfg.Qwen.APIKey != "" {
+				cfg.Qwen.Model = selectModel("Qwen", knownModels["qwen"], cfg.Qwen.Model)
+			}
+
+			// ── Moonshot ────────────────────────────────────────────────────
+			fmt.Println("\n  ── Moonshot (Kimi) ──")
+			fmt.Printf("  API key (Enter to keep existing%s): ",
+				maskKey(cfg.Moonshot.APIKey))
+			if k := readLine(); k != "" {
+				cfg.Moonshot.APIKey = k
+			}
+			if cfg.Moonshot.APIKey != "" {
+				cfg.Moonshot.Model = selectModel("Moonshot", knownModels["moonshot"], cfg.Moonshot.Model)
+			}
+
+			cfg.Provider = "auto"
 			if err := config.Save(cfg); err != nil {
 				return fmt.Errorf("failed to save config: %w", err)
 			}
@@ -512,6 +627,14 @@ func setupCmd() *cobra.Command {
 			return nil
 		},
 	}
+}
+
+// maskKey returns " (set)" if key is non-empty, else "" — never reveals key chars.
+func maskKey(key string) string {
+	if key != "" {
+		return " (set)"
+	}
+	return ""
 }
 
 // ── cache ─────────────────────────────────────────────────────────────────────
@@ -542,6 +665,8 @@ func clearCache() error {
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
+var stdinReader = bufio.NewReader(os.Stdin)
+
 func truncate(s string, max int) string {
 	if len(s) <= max {
 		return s
@@ -550,6 +675,6 @@ func truncate(s string, max int) string {
 }
 
 func readLine() string {
-	s, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+	s, _ := stdinReader.ReadString('\n')
 	return strings.TrimSpace(s)
 }

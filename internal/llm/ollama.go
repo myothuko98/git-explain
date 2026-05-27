@@ -23,6 +23,34 @@ func NewOllama(cfg config.OllamaConfig) Provider {
 	return &ollamaProvider{cfg: cfg}
 }
 
+// ListModels returns the names of all models currently installed in Ollama.
+// Returns nil if Ollama is unreachable or returns an error.
+func ListModels(ctx context.Context, baseURL string) []string {
+	c := &http.Client{Timeout: 3 * time.Second}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/api/tags", nil)
+	if err != nil {
+		return nil
+	}
+	resp, err := c.Do(req)
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+	var payload struct {
+		Models []struct {
+			Name string `json:"name"`
+		} `json:"models"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return nil
+	}
+	names := make([]string, 0, len(payload.Models))
+	for _, m := range payload.Models {
+		names = append(names, m.Name)
+	}
+	return names
+}
+
 func (o *ollamaProvider) Name() string { return "ollama" }
 
 // model returns the resolved model name (auto-detected if configured model is absent).
