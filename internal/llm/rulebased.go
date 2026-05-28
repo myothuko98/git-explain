@@ -19,10 +19,33 @@ func (r *ruleBasedProvider) Available(_ context.Context) bool { return true }
 func (r *ruleBasedProvider) Explain(_ context.Context, prompt string) (string, error) {
 	subject := firstRelevantLine(prompt)
 	cc := parseConventionalCommit(subject)
-	kind := scoreChangeType(strings.ToLower(subject))
-	scopes := collectScopes(strings.ToLower(prompt), cc.scope)
+
+	// Parse diff content for file paths, line counts, and security scanning.
+	di := parseDiff(prompt)
+
+	// Score change type and compute confidence.
+	kind, conf := scoreChangeTypeWithConfidence(strings.ToLower(subject), cc)
+
+	// Combine full prompt + diff file paths for scope detection.
+	scopeText := strings.ToLower(prompt) + " " + strings.ToLower(strings.Join(di.files, " "))
+	scopes := collectScopes(scopeText, cc.scope)
+
 	breaking := cc.breaking || isBreakingChange(strings.ToLower(prompt))
-	return buildOutput(kind, scopes, breaking), nil
+
+	secPats := checkSecurity(di.addedContent)
+	if len(secPats) > 0 {
+		kind.risk = "🔴 High"
+	}
+
+	extras := outputExtras{
+		confidence:       conf,
+		magnitude:        magnitudeLabel(di.addedLines + di.removedLines),
+		securityPatterns: secPats,
+		qualityWarning:   messageQuality(subject),
+		blameHint:        blameContextHint(prompt),
+	}
+
+	return buildOutput(kind, scopes, breaking, extras), nil
 }
 
 // ── conventional commit parser ────────────────────────────────────────────────
@@ -278,7 +301,7 @@ var scoreMap = []struct {
 	{key: "chore", keywords: []string{"chore", "misc", "minor", "format", "lint", "generate", "generat", "proto", "tidy", "cleanup"}, weight: 2},
 }
 
-func scoreChangeType(text string) changeKind {
+func scoreChangeTypeWithConfidence(text string, cc conventionalCommit) (changeKind, string) {
 	scores := make(map[string]int, len(scoreMap))
 	for _, entry := range scoreMap {
 		for _, kw := range entry.keywords {
@@ -287,8 +310,9 @@ func scoreChangeType(text string) changeKind {
 			}
 		}
 	}
-	// Also honor conventional commit type directly
-	cc := parseConventionalCommit(text)
+
+	// Boost from conventional commit type prefix (high-confidence signal).
+	ccDetected := true
 	switch cc.kind {
 	case "fix", "bugfix":
 		scores["bug-fix"] += 10
@@ -308,6 +332,8 @@ func scoreChangeType(text string) changeKind {
 		scores["ci-build"] += 10
 	case "revert":
 		scores["revert"] += 10
+	default:
+		ccDetected = false
 	}
 
 	best, bestScore := "chore", 0
@@ -317,14 +343,24 @@ func scoreChangeType(text string) changeKind {
 		}
 	}
 	if bestScore == 0 {
-		// No match — default to "new-feature" heuristic
 		best = "new-feature"
 	}
+
+	var conf string
+	switch {
+	case ccDetected:
+		conf = "High"
+	case bestScore >= 6:
+		conf = "Medium"
+	default:
+		conf = "Low"
+	}
+
 	k, ok := changeKinds[best]
 	if !ok {
 		k = changeKinds["chore"]
 	}
-	return k
+	return k, conf
 }
 
 // ── scope detection ───────────────────────────────────────────────────────────
@@ -417,9 +453,173 @@ func collectScopes(text, ccScope string) []string {
 	return scopes
 }
 
+// ── diff-aware analysis ───────────────────────────────────────────────────────
+
+// diffInfo holds parsed information extracted from a git diff block in the prompt.
+type diffInfo struct {
+	files        []string
+	addedContent []string // raw content of added lines (for security scanning)
+	addedLines   int
+	removedLines int
+}
+
+// diffFileRe matches "diff --git a/path b/path" header lines.
+var diffFileRe = regexp.MustCompile(`^diff --git a/(\S+) b/\S+`)
+
+func parseDiff(prompt string) diffInfo {
+	var di diffInfo
+	seen := make(map[string]bool)
+	for _, line := range strings.Split(prompt, "\n") {
+		if m := diffFileRe.FindStringSubmatch(line); m != nil {
+			if !seen[m[1]] {
+				seen[m[1]] = true
+				di.files = append(di.files, m[1])
+			}
+			continue
+		}
+		if strings.HasPrefix(line, "+") && !strings.HasPrefix(line, "+++") {
+			di.addedLines++
+			di.addedContent = append(di.addedContent, line[1:])
+		} else if strings.HasPrefix(line, "-") && !strings.HasPrefix(line, "---") {
+			di.removedLines++
+		}
+	}
+	return di
+}
+
+// magnitudeLabel returns a human label for the total lines changed.
+func magnitudeLabel(total int) string {
+	switch {
+	case total == 0:
+		return ""
+	case total < 10:
+		return "tiny"
+	case total < 50:
+		return "small"
+	case total < 200:
+		return "medium"
+	default:
+		return "large"
+	}
+}
+
+// ── security pattern detection ────────────────────────────────────────────────
+
+var securityKeywords = []struct {
+	keyword string
+	label   string
+}{
+	{"password", "password handling"},
+	{"passwd", "password handling"},
+	{"secret", "secret value"},
+	{"api_key", "API key"},
+	{"apikey", "API key"},
+	{"private_key", "private key"},
+	{"access_token", "access token"},
+	{"auth_token", "auth token"},
+	{"bearer", "bearer token"},
+	{"eval(", "eval() usage"},
+	{"exec(", "exec() usage"},
+	{"os.system(", "os.system() usage"},
+	{"subprocess.run", "subprocess invocation"},
+	{"subprocess.call", "subprocess invocation"},
+	{"tls.config", "TLS configuration"},
+	{"x509", "X.509 certificate"},
+	{"crypto/", "cryptographic code"},
+	{"/etc/passwd", "system file access"},
+	{"/etc/shadow", "system file access"},
+}
+
+// checkSecurity scans added diff lines for security-sensitive patterns.
+func checkSecurity(addedLines []string) []string {
+	seen := make(map[string]bool)
+	var found []string
+	for _, line := range addedLines {
+		lower := strings.ToLower(line)
+		for _, sk := range securityKeywords {
+			if !seen[sk.label] && strings.Contains(lower, sk.keyword) {
+				seen[sk.label] = true
+				found = append(found, sk.label)
+			}
+		}
+	}
+	return found
+}
+
+// ── commit message quality ────────────────────────────────────────────────────
+
+var vagueMessages = []string{"fix", "update", "changes", "change", "misc", "wip", "temp", "todo", "stuff", "things", "work", "done"}
+
+// messageQuality returns a warning string if the commit message is too vague, or "".
+func messageQuality(subject string) string {
+	s := strings.TrimSpace(subject)
+	if s == "" {
+		return "⚠  Empty commit message — add a descriptive subject line."
+	}
+	lower := strings.ToLower(s)
+	for _, v := range vagueMessages {
+		if lower == v {
+			return fmt.Sprintf("⚠  Vague commit message %q — e.g. \"fix(auth): nil pointer on logout path\".", s)
+		}
+	}
+	if len(s) <= 15 {
+		return fmt.Sprintf("⚠  Very short commit message %q — consider adding more context.", s)
+	}
+	return ""
+}
+
+// ── blame context hints ───────────────────────────────────────────────────────
+
+// blameContextHint inspects surrounding code-context lines in the prompt (if present)
+// and returns a short hint about the line's likely purpose.
+func blameContextHint(prompt string) string {
+	inContext := false
+	var contextLines []string
+	for _, line := range strings.Split(prompt, "\n") {
+		if strings.Contains(line, "Context lines:") || strings.Contains(line, "context:") {
+			inContext = true
+			continue
+		}
+		if inContext {
+			if strings.TrimSpace(line) == "" || strings.HasPrefix(line, "---") {
+				break
+			}
+			contextLines = append(contextLines, line)
+		}
+	}
+	if len(contextLines) == 0 {
+		return ""
+	}
+	joined := strings.ToLower(strings.Join(contextLines, " "))
+	switch {
+	case contains(joined, "panic(", "log.fatal"):
+		return "📍 Critical path — this line is in an error-fatal or panic context. Confirm the condition is truly unrecoverable."
+	case contains(joined, "!auth", "!authorized", "!isauth", "token ==", "token !="):
+		return "📍 Auth guard — this line is part of an authorization check. Ensure no bypass conditions are introduced."
+	case contains(joined, "os.getenv", "viper.get", "config.", "env.get", "getenv"):
+		return "📍 Config read — this line reads from environment/config. Verify default values and missing-key handling."
+	case contains(joined, "err !=", "if err", "return err", "errors."):
+		return "📍 Error handler — this line is in an error-handling path. Verify all error cases propagate correctly."
+	case contains(joined, "nil", "null", "nullptr"):
+		return "📍 Nil/null check — this line involves nil/null handling. Verify all code paths initialize this value."
+	}
+	return ""
+}
+
+// ── output extras ─────────────────────────────────────────────────────────────
+
+// outputExtras holds enrichment signals to include in the rule-based output.
+type outputExtras struct {
+	confidence       string   // "High" | "Medium" | "Low"
+	magnitude        string   // "tiny" | "small" | "medium" | "large" | ""
+	qualityWarning   string   // non-empty if commit message is vague
+	blameHint        string   // non-empty if blame context was detected
+	securityPatterns []string // detected security-sensitive patterns (may be empty)
+}
+
 // ── output builder ────────────────────────────────────────────────────────────
 
-func buildOutput(kind changeKind, scopes []string, breaking bool) string {
+func buildOutput(kind changeKind, scopes []string, breaking bool, extras outputExtras) string {
 	var b strings.Builder
 
 	breakStr := "No"
@@ -427,13 +627,33 @@ func buildOutput(kind changeKind, scopes []string, breaking bool) string {
 		breakStr = "⚠  YES — this may be a breaking change"
 	}
 
+	confStr := ""
+	if extras.confidence != "" {
+		confStr = fmt.Sprintf(" (confidence: %s)", extras.confidence)
+	}
+
 	b.WriteString("[rule-based analysis — no LLM configured]\n")
 	b.WriteString(strings.Repeat("─", 62) + "\n")
-	fmt.Fprintf(&b, "  Change type:  %s\n", kind.name)
+	fmt.Fprintf(&b, "  Change type:  %s%s\n", kind.name, confStr)
 	fmt.Fprintf(&b, "  Risk level:   %s\n", kind.risk)
 	fmt.Fprintf(&b, "  Scope:        %s\n", strings.Join(scopes, " · "))
 	fmt.Fprintf(&b, "  Breaking:     %s\n", breakStr)
+	if extras.magnitude != "" {
+		fmt.Fprintf(&b, "  Magnitude:    %s change\n", extras.magnitude)
+	}
 	b.WriteString("\n")
+
+	if extras.qualityWarning != "" {
+		fmt.Fprintf(&b, "  %s\n\n", extras.qualityWarning)
+	}
+
+	if len(extras.securityPatterns) > 0 {
+		b.WriteString("  🔐 Security-sensitive patterns detected:\n")
+		for _, p := range extras.securityPatterns {
+			fmt.Fprintf(&b, "     • %s\n", p)
+		}
+		b.WriteString("  → Review carefully for credentials, injection, or access-control issues.\n\n")
+	}
 
 	b.WriteString("  What this change likely does:\n")
 	for _, line := range wordWrap(kind.description, 60) {
@@ -456,6 +676,13 @@ func buildOutput(kind changeKind, scopes []string, breaking bool) string {
 		b.WriteString("\n")
 		b.WriteString("  ⚠  Side-effects:\n")
 		for _, line := range wordWrap(kind.sideEffects, 58) {
+			fmt.Fprintf(&b, "  %s\n", line)
+		}
+	}
+
+	if extras.blameHint != "" {
+		b.WriteString("\n")
+		for _, line := range wordWrap(extras.blameHint, 60) {
 			fmt.Fprintf(&b, "  %s\n", line)
 		}
 	}

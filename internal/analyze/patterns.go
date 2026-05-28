@@ -2,6 +2,7 @@ package analyze
 
 import (
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -76,6 +77,66 @@ func FormatPattern(p AuthorPattern) string {
 	fmt.Fprintf(&sb, "  Refactor ratio: %.0f%%\n", p.RefactorRatio*100)
 	if len(p.TopKeywords) > 0 {
 		fmt.Fprintf(&sb, "  Top keywords:   %s\n", strings.Join(p.TopKeywords, ", "))
+	}
+	return sb.String()
+}
+
+// ── file hotspot detection ────────────────────────────────────────────────────
+
+// FileHotspot represents a file that appears frequently in commit messages.
+type FileHotspot struct {
+	Path    string
+	Changes int
+}
+
+// filePathRe matches common source and config file names within commit messages.
+var filePathRe = regexp.MustCompile(`\b[\w./-]+\.(?:go|ts|tsx|js|jsx|py|rs|java|rb|php|swift|kt|cs|sql|proto|yaml|yml|json|toml|tf|sh|md)\b`)
+
+// HotspotFiles returns the top n most frequently mentioned files across all commit subjects.
+func HotspotFiles(entries []gitpkg.LogEntry, n int) []FileHotspot {
+	freq := make(map[string]int)
+	for _, e := range entries {
+		seen := make(map[string]bool)
+		for _, m := range filePathRe.FindAllString(e.Subject, -1) {
+			if !seen[m] {
+				seen[m] = true
+				freq[m]++
+			}
+		}
+	}
+	type kv struct {
+		k string
+		v int
+	}
+	var pairs []kv
+	for k, v := range freq {
+		pairs = append(pairs, kv{k, v})
+	}
+	sort.SliceStable(pairs, func(i, j int) bool {
+		if pairs[i].v != pairs[j].v {
+			return pairs[i].v > pairs[j].v
+		}
+		return pairs[i].k < pairs[j].k
+	})
+	var out []FileHotspot
+	for i, p := range pairs {
+		if i >= n {
+			break
+		}
+		out = append(out, FileHotspot{Path: p.k, Changes: p.v})
+	}
+	return out
+}
+
+// FormatHotspots returns a human-readable summary of file hotspots.
+func FormatHotspots(hotspots []FileHotspot) string {
+	if len(hotspots) == 0 {
+		return ""
+	}
+	var sb strings.Builder
+	sb.WriteString("File hotspots (most frequently referenced in commits):\n")
+	for i, h := range hotspots {
+		fmt.Fprintf(&sb, "  %d. %s (%d commits)\n", i+1, h.Path, h.Changes)
 	}
 	return sb.String()
 }

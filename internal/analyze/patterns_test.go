@@ -1,6 +1,7 @@
 package analyze_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/myothuko98/git-explain/internal/analyze"
@@ -70,5 +71,63 @@ func TestFormatPattern(t *testing.T) {
 	}
 	if len(out) < 10 {
 		t.Errorf("format output too short: %q", out)
+	}
+}
+
+// ── file hotspot tests ────────────────────────────────────────────────────────
+
+var hotspotEntries = []gitpkg.LogEntry{
+	{SHA: "h1", Author: "Alice", Date: "2024-01-01", Subject: "fix: nil pointer in handler.go"},
+	{SHA: "h2", Author: "Alice", Date: "2024-01-02", Subject: "fix: race in handler.go"},
+	{SHA: "h3", Author: "Bob", Date: "2024-01-03", Subject: "refactor: clean handler.go"},
+	{SHA: "h4", Author: "Alice", Date: "2024-01-04", Subject: "feat: add cache in redis.go"},
+	{SHA: "h5", Author: "Bob", Date: "2024-01-05", Subject: "fix: nil in auth.go"},
+}
+
+func TestHotspotFilesTopFile(t *testing.T) {
+	hotspots := analyze.HotspotFiles(hotspotEntries, 5)
+	if len(hotspots) == 0 {
+		t.Fatal("expected at least one hotspot")
+	}
+	if hotspots[0].Path != "handler.go" {
+		t.Errorf("expected handler.go as top hotspot, got %q", hotspots[0].Path)
+	}
+	if hotspots[0].Changes != 3 {
+		t.Errorf("expected 3 commits for handler.go, got %d", hotspots[0].Changes)
+	}
+}
+
+func TestHotspotFilesLimit(t *testing.T) {
+	hotspots := analyze.HotspotFiles(hotspotEntries, 1)
+	if len(hotspots) != 1 {
+		t.Errorf("expected 1 hotspot with limit=1, got %d", len(hotspots))
+	}
+}
+
+func TestHotspotFilesEmpty(t *testing.T) {
+	hotspots := analyze.HotspotFiles([]gitpkg.LogEntry{}, 5)
+	if len(hotspots) != 0 {
+		t.Errorf("expected no hotspots for empty entries, got %d", len(hotspots))
+	}
+}
+
+func TestFormatHotspots(t *testing.T) {
+	hotspots := []analyze.FileHotspot{
+		{Path: "handler.go", Changes: 3},
+		{Path: "auth.go", Changes: 1},
+	}
+	out := analyze.FormatHotspots(hotspots)
+	if !strings.Contains(out, "handler.go") {
+		t.Errorf("expected handler.go in hotspot output, got: %s", out)
+	}
+	if !strings.Contains(out, "3 commits") {
+		t.Errorf("expected commit count in hotspot output, got: %s", out)
+	}
+}
+
+func TestFormatHotspotsEmpty(t *testing.T) {
+	out := analyze.FormatHotspots(nil)
+	if out != "" {
+		t.Errorf("expected empty string for nil hotspots, got: %q", out)
 	}
 }
